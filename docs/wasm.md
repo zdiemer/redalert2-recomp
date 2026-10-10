@@ -6,9 +6,14 @@ Linux Win32 HLE for DirectDraw, sound, dialogs, files and input.
 Red Alert 2 builds and runs a skirmish in Chromium using the
 EA installation (23,201 lifted functions, zero errors and zero stubs).
 The browser test navigates the menus and deploys the MCV using browser mouse
-and keyboard input. The October 10, 2026 Chromium run reached simulation
-frame 595, recorded 2,236 non-silent Web Audio buffers, and reported zero
-JavaScript errors (60-second skirmish check).
+and keyboard input. The October 10, 2026 Chrome 154 run rendered at the emulated
+display's 1920x1080 resolution, reached simulation frame 2,090, recorded 3,537
+non-silent Web Audio buffers, and reported zero JavaScript errors (90 seconds).
+An uninterrupted movie check measured frame 150 at 9.95 seconds, matching
+the original movies' 15 fps; the audio queue remained about 74 ms ahead.
+The Allied campaign check played its cutscenes, reached simulation frame 2,450,
+and verified Tanya's selection and movement by tracking her health bar through
+69 pixels of movement after a browser click (160 seconds, zero JavaScript errors).
 Yuri's Revenge has also lifted successfully (24,944 functions,
 zero errors and zero stubs); its WASM build has not yet been tested.
 
@@ -22,6 +27,10 @@ Windows, or a POSIX shell, Make and a native C compiler on Linux/macOS.
 first run; `build_ffmpeg.py` can also be run separately.
 The bootstrap downloads Emscripten 6.0.12 and pcrecomp's Linux HLE revision
 `12a3480e4691ae43bf0f3d6504f5da414b6e2bc8` into `.deps/`.
+Generated game code uses LLVM `-O2`. The previous `-O1` build caused Chrome's
+optimizing compiler to exhaust native memory in a large lifted function during
+Allied playback; debugger instrumentation concealed this failure. Linking
+still uses `-O1` to avoid an expensive whole-module Binaryen optimization pass.
 
 ```powershell
 py -3 tools/wasm/bootstrap.py --game-dir "C:\Program Files\EA Games\Command and Conquer Red Alert II"
@@ -59,9 +68,16 @@ committed or uploaded; every player builds from their own installation.
   displays the existing DirectDraw surfaces; the existing DirectSound mixer
   feeds Web Audio on its own worker. Fonts use SDL2_ttf. SDL's stock browser
   renderer and audio path failed when called from the game worker.
+- DOM input uses a shared atomic ring, so polling `PeekMessage` does not make
+  synchronous calls to the browser. A bounded pixel snapshot is painted on
+  `requestAnimationFrame`. Mouse release waits for the mouse worker to observe
+  the press and the final drag position.
 - Browser adaptations are generated into the build directory by
   `tools/wasm/prepare_runtime.py`. The dependency checkout is left untouched.
 - Bink movies use FFmpeg's video and audio decoders in WASM through the HLE.
+  Each decoder reads within its own MIX entry using positional file reads.
+  `[bink timing]` reports frame progress and cumulative decode/copy time every
+  150 frames and on close for movies with sound.
   End-of-movie waits stop the title control's frame catch-up loop. A fallback
   no-decoder path also reports no available frame after a failed open.
   The movie MIX archives are required: initialization
@@ -84,9 +100,9 @@ and install its Chromium browser, or supply an existing one with `--chromium`.
 With the server running:
 
 ```powershell
-py -3 tools/wasm/playtest.py --seconds 45
-py -3 tools/wasm/playtest.py --case skirmish --seconds 120
-py -3 tools/wasm/playtest.py --case campaign --seconds 150
+py -3 tools/wasm/playtest.py --case video --seconds 35
+py -3 tools/wasm/playtest.py --case skirmish --skip-intro --resolution auto --seconds 90
+py -3 tools/wasm/playtest.py --case campaign --skip-intro --seconds 200
 ```
 
 The runner saves browser logs, a screenshot and a JSON result in
@@ -98,7 +114,12 @@ requires the game's `Adding event DEPLOY` log. Audio state and non-silent
 buffer counts are also recorded. A rendered menu does not pass the skirmish check.
 The campaign case enters the Allied campaign and checks a browser-issued
 unit order. Both cases check pointer lock, and movie screenshots are saved
-before the test skips each clip. Ordinary launch plays movies normally.
+before the test skips each full-screen clip. Radar messages play normally.
+`--skip-intro` changes only the test's in-memory INI; ordinary launch preserves
+the installation's intro setting. The video case leaves movies uninterrupted
+and checks their pace. `--resolution auto` uses an emulated 1920x1080 display
+inside a differently sized browser window, checking the game's INI resolution
+rather than CSS scaling. Use `--chromium` to select an installed browser.
 
 FFmpeg sources are pinned to `f893221c8d89cb798b829bebe71d55e1a3f242fd`
 (7.1.2), using its LGPL 2.1-or-later configuration; source and license are

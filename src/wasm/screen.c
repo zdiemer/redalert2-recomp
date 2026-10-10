@@ -2,7 +2,9 @@
  * and HLE state stays on the machine thread; DOM operations are proxied. */
 #include <emscripten.h>
 #include <stdint.h>
+#include <stdatomic.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include "win32hle.h"
 
@@ -13,6 +15,18 @@ int (*hle_screen_compose_hook)(const uint8_t *, int, int, int, uint32_t *);
 void (*hle_screen_settings_hook)(const char *, int, int);
 static int g_headless;
 static uint32_t g_next;
+static _Atomic int g_presenting;
+static uint8_t *g_pixels;
+static size_t g_pixels_size;
+static uint32_t g_palette[256];
+/* One DOM producer and one game-thread consumer. Input polling must never
+ * synchronously proxy to the browser: PeekMessage can run thousands of times
+ * between frames, starving presentation and audio. Publish complete events
+ * with release/acquire ordering before advancing either index. */
+static struct {
+    _Atomic uint32_t read, write;
+    int32_t events[1024 * 4];
+} g_input;
 
 static void warp(int x, int y) {
     MAIN_THREAD_EM_ASM({
@@ -34,6 +48,7 @@ int hle_screen_open(const char *title, int fullscreen, int headless) {
     (void)fullscreen;
     g_headless = headless;
     hle_cursor_hook = warp;
+    MAIN_THREAD_EM_ASM({ Module.ra2AttachInput($0); }, &g_input);
     hle_screen_title(title);
     fprintf(stderr, "[screen] browser Canvas2D\n");
     return 0;
@@ -43,15 +58,14 @@ static void pump_input(void) {
     static int32_t events[1024 * 4];
     static int pending;
     static uint32_t pressed_at[3];
+    static uint32_t left_changed;
     static int pressed[3], left_reads;
-    int count = MAIN_THREAD_EM_ASM_INT({
-        const queue = Module.ra2Input || [];
-        const count = Math.min(queue.length, $1);
-        for (let i = 0; i < count; i++) HEAP32.set(queue[i], ($0 >> 2) + i*4);
-        queue.splice(0, count);
-        return count;
-    }, events + 4*pending, 1024-pending);
-    pending += count;
+    uint32_t read = atomic_load_explicit(&g_input.read, memory_order_relaxed);
+    uint32_t write = atomic_load_explicit(&g_input.write, memory_order_acquire);
+    while (read != write && pending < 1024) {
+        memcpy(events + 4*pending++, g_input.events + 4*(read++ % 1024), 4*sizeof(int32_t));
+    }
+    atomic_store_explicit(&g_input.read, read, memory_order_release);
     int consumed = 0;
     for (int i = 0; i < pending; i++) {
         int32_t *e = events + 4*i;
@@ -66,13 +80,16 @@ static void pump_input(void) {
              * until the worker has had time to observe it. */
             if (up && pressed[button]) {
                 uint32_t age = now-pressed_at[button];
-                if (age < 100 || (button == 0 && hle_lbutton_reads-left_reads < 2 && age < 500)) break;
+                if (age < 100 || (button == 0 && hle_lbutton_reads-left_reads < 2 && now-left_changed < 500)) break;
                 pressed[button] = 0;
             }
             if (down) {
                 pressed[button] = 1; pressed_at[button] = now;
-                if (button == 0) left_reads = hle_lbutton_reads;
+                if (button == 0) { left_reads = hle_lbutton_reads; left_changed = now; }
             }
+            /* A drag's final motion must also be sampled while still down,
+             * even if down itself was observed long before release. */
+            if (e[1] == 0x200 && pressed[0]) { left_reads = hle_lbutton_reads; left_changed = now; }
             hle_input_mouse((uint32_t)e[1], e[2], e[3]);
         }
         consumed++;
@@ -84,7 +101,8 @@ static void pump_input(void) {
 void hle_screen_pump(void) {
     pump_input();
     uint32_t now = hle_ticks_ms();
-    if (g_headless || (int32_t)(now - g_next) < 0) return;
+    if (g_headless || (int32_t)(now - g_next) < 0 ||
+        atomic_load_explicit(&g_presenting, memory_order_acquire)) return;
     g_next = now + 33;
     const uint8_t *px;
     const uint32_t *palette;
@@ -92,7 +110,21 @@ void hle_screen_pump(void) {
     if (!hle_dd_frame(&px, &w, &h, &pitch, &bpp, &palette, NULL)) return;
     if (hle_screen_frame_hook) hle_screen_frame_hook(px, w, h, pitch, bpp);
     int cursor = !hle_screen_cursor_hook || hle_screen_cursor_hook();
-    MAIN_THREAD_EM_ASM({
+    /* The browser consumes a snapshot on its animation frame. Never wait
+     * for painting with the guest machine locked, or keep servicing proxy
+     * calls so continuously that the browser cannot run its event loop. */
+    size_t size = (size_t)pitch * h;
+    if (size > g_pixels_size) {
+        uint8_t *pixels = realloc(g_pixels, size);
+        if (!pixels) return;
+        g_pixels = pixels; g_pixels_size = size;
+    }
+    memcpy(g_pixels, px, size);
+    if (palette) memcpy(g_palette, palette, sizeof g_palette);
+    atomic_store_explicit(&g_presenting, 1, memory_order_release);
+    MAIN_THREAD_ASYNC_EM_ASM({
+      requestAnimationFrame(() => {
+       try {
         const canvas = Module.canvas; const w = $1; const h = $2;
         if (canvas.width !== w || canvas.height !== h) {
             canvas.width = w; canvas.height = h;
@@ -121,5 +153,7 @@ void hle_screen_pump(void) {
         ctx.putImageData(frame, 0, 0);
         document.querySelector('#status').textContent = 'Game running';
         document.querySelector('#status').hidden = true;
-    }, px, w, h, pitch, bpp, palette, cursor);
+       } finally { Atomics.store(HEAP32, $7 >> 2, 0); }
+      });
+    }, g_pixels, w, h, pitch, bpp, g_palette, cursor, &g_presenting);
 }

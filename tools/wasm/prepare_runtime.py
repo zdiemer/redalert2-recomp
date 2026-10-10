@@ -50,6 +50,37 @@ static inline uint64_t __rdtsc(void) { return (uint64_t)(emscripten_get_now() * 
             end = text.index('\n/* the object:', start)
             text = text[:start] + '#include "audio.h"\n' + text[end:]
         elif path.name == "bink.c":
+            # MIX entries may share their host file descriptor. Keep each
+            # decoder's position and EOF independent of other archive reads.
+            text = replace(text, 'int64_t base;', 'int64_t position, length;\n    int64_t base;')
+            start = text.index('static int io_read(')
+            end = text.index('\nstatic void close_bink(', start)
+            text = text[:start] + '''static int io_read(void *opaque, uint8_t *buf, int n) {
+    bink_t *b = opaque;
+    if (b->position >= b->length) return AVERROR_EOF;
+    if (n > b->length-b->position) n = (int)(b->length-b->position);
+    ssize_t r = pread(b->fd, buf, (size_t)n, (off_t)(b->base+b->position));
+    if (r > 0) b->position += r;
+    return r > 0 ? (int)r : AVERROR_EOF;
+}
+static int64_t io_seek(void *opaque, int64_t off, int whence) {
+    bink_t *b = opaque;
+    if (whence == AVSEEK_SIZE) return b->length;
+    whence &= ~AVSEEK_FORCE;
+    if (whence == SEEK_CUR) off += b->position;
+    else if (whence == SEEK_END) off += b->length;
+    else if (whence != SEEK_SET) return -1;
+    if (off < 0) return -1;
+    return b->position = off;
+}
+''' + text[end:]
+            text = replace(text, 'b->io = avio_alloc_context', '''uint8_t header[8];
+    if (pread(b->fd, header, sizeof header, (off_t)b->base) != sizeof header) {
+        g_error = "cannot read movie header"; close_bink(b); RET(0, 2);
+    }
+    b->length = (int64_t)((uint32_t)header[4] | (uint32_t)header[5]<<8 |
+        (uint32_t)header[6]<<16 | (uint32_t)header[7]<<24) + 8;
+    b->io = avio_alloc_context''')
             # The RA2 title control still polls after BinkOpen fails. Returning
             # "frame ready" forever traps its catch-up loop in BinkDoFrame.
             # Without a decoder there is never a frame available to present.
@@ -66,10 +97,40 @@ static inline uint64_t __rdtsc(void) { return (uint64_t)(emscripten_get_now() * 
                            'AVSEEK_FLAG_BACKWARD')
             text = replace(text, 'b->done = 0, b->FrameNum = 1;',
                            'b->done = 0, b->FrameNum = 1, b->LastFrameNum = 0;')
+            # Low-volume timing makes slow decoding distinguishable from
+            # slow presentation, without tracing every guest call/frame.
+            text = replace(text, 'uint32_t start_ms, paused_at;',
+                           'uint32_t start_ms, paused_at;\n'
+                           '    uint32_t decoded, decode_ms, copy_ms;')
+            text = replace(text, 'static void close_bink(bink_t *b) {', '''static void movie_timing(bink_t *b) {
+    if (b->stream >= 0 && b->decoded)
+        fprintf(stderr, "[bink timing] %ux%u/%u frame=%u elapsed=%u decode_ms=%u copy_ms=%u decoded=%u\\n",
+            b->Width, b->Height, b->Frames, b->LastFrameNum,
+            hle_ticks_ms()-b->start_ms, b->decode_ms, b->copy_ms, b->decoded);
+}
+static void close_bink(bink_t *b) {
+    movie_timing(b);''')
+            text = replace(text, 'b->have_frame = decode_frame(b);', '''uint32_t before = hle_ticks_ms();
+    b->have_frame = decode_frame(b);
+    b->decode_ms += hle_ticks_ms()-before;
+    b->decoded++;''')
+            text = replace(text, 'b->LastFrameNum = b->FrameNum;', '''b->LastFrameNum = b->FrameNum;
+    if (b->decoded % 150 == 0) movie_timing(b);''')
+            text = replace(text, 'int w = f->width, h = f->height;',
+                           '''uint32_t before = hle_ticks_ms();
+    int w = f->width, h = f->height;''')
+            text = replace(text, '    RET(0, 7);\n}',
+                           '    b->copy_ms += hle_ticks_ms()-before;\n    RET(0, 7);\n}')
         elif path.name == "host_lite.c":
             # sched_yield is a no-op in Emscripten. Give the notified worker
             # time to wake before the current worker takes the mutex again.
-            text = text.replace('#include <pthread.h>', '#include <pthread.h>\n#include <unistd.h>\n#include <emscripten.h>')
+            text = text.replace('#include <pthread.h>', '#include <pthread.h>\n#include <unistd.h>\n#include <emscripten.h>\n#include <stdatomic.h>')
+            # These counters are read outside the machine mutex. Volatile
+            # does not provide cross-thread synchronization in WebAssembly.
+            text = replace(text, 'static volatile int      g_waiters;', 'static _Atomic int      g_waiters;')
+            text = replace(text, 'static volatile unsigned g_owner_gen;', 'static _Atomic unsigned g_owner_gen;')
+            text = replace(text, '__sync_fetch_and_add(&g_waiters, 1);', 'atomic_fetch_add(&g_waiters, 1);')
+            text = replace(text, '__sync_fetch_and_sub(&g_waiters, 1);', 'atomic_fetch_sub(&g_waiters, 1);')
             text = text.replace('sched_yield();', 'usleep(1000);')
             text = replace(text, 'static __thread mstate g_ms;', '''static __thread mstate g_ms;
 static mstate *web_states[64];
@@ -86,6 +147,7 @@ static volatile unsigned web_states_count;''')
     }''')
             text += '''
 void wasm_machine_report(void) {
+    EM_ASM({ console.log('[machine worker] guest=' + $0.toString(16) + ' import=' + UTF8ToString($1) + ' waiters=' + $2); }, g_cur_func, g_cur_import, g_waiters);
     fprintf(stderr, "[machine] waiters=%d generation=%u\\n", g_waiters, g_owner_gen);
     for (unsigned i = 0; i < web_states_count && i < 64; i++) {
         mstate *state = web_states[i];

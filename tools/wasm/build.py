@@ -13,7 +13,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--target", choices=("game", "gamemd"), default="game")
     parser.add_argument("--jobs", type=int, default=6)
-    parser.add_argument("--opt", default="-O1")
+    parser.add_argument("--opt", default="-O2")
     args = parser.parse_args()
     sdk = Path(os.environ.get("EMSDK", ROOT / ".deps/emsdk"))
     if not (ROOT / ".deps/ffmpeg-wasm/install/lib/libavformat.a").exists():

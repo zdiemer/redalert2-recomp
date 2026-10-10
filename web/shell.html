@@ -100,10 +100,24 @@
     } catch (error) { status.hidden=false; status.textContent=error.message; output(error.stack); }
   }
   function queue(event) {
+    if (Module.ra2InputBuffer !== undefined) {
+      const base = Module.ra2InputBuffer >>> 2;
+      const read = Atomics.load(HEAPU32, base);
+      const write = Atomics.load(HEAPU32, base+1);
+      if (((write-read)>>>0) >= 1024) return;
+      HEAP32.set(event, base+2+(write%1024)*4);
+      Atomics.store(HEAPU32, base+1, (write+1)>>>0);
+      return;
+    }
     const q = Module.ra2Input;
     if (event[0]===0 && event[1]===0x200 && q.length && q.at(-1)[0]===0 && q.at(-1)[1]===0x200) q[q.length-1]=event;
     else if (q.length<1024) q.push(event);
   }
+  Module.ra2AttachInput = address => {
+    Module.ra2InputBuffer = address;
+    for (const event of Module.ra2Input) queue(event);
+    Module.ra2Input.length = 0;
+  };
   function resumeAudio() { Module.ra2Audio?.resume().catch(()=>{}); }
   const held = new Set();
   for (const [type,down] of [['keydown',1],['keyup',0]]) canvas.addEventListener(type,e=>{
@@ -120,8 +134,11 @@
       } else { p.x=(e.clientX-r.left)*canvas.width/r.width; p.y=(e.clientY-r.top)*canvas.height/r.height; }
       p.x=Math.max(0,Math.min(canvas.width-1,p.x)); p.y=Math.max(0,Math.min(canvas.height-1,p.y));
       if (type==='pointerdown') {
-        resumeAudio(); canvas.focus(); canvas.setPointerCapture(e.pointerId);
-        if (document.pointerLockElement!==canvas) canvas.requestPointerLock()?.catch(()=>{});
+        resumeAudio(); canvas.focus();
+        if (document.pointerLockElement!==canvas) {
+          if (e.pointerId>=0) canvas.setPointerCapture(e.pointerId);
+          canvas.requestPointerLock()?.catch(()=>{});
+        }
       }
       queue([0,base+(type==='pointermove'?0:e.button===2?3:e.button===1?6:0),Math.floor(p.x),Math.floor(p.y)]);
       drawCursor(); e.preventDefault();
