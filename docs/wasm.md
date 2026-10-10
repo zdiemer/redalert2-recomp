@@ -5,7 +5,10 @@ The browser target compiles the original game's lifted C, using pcrecomp's
 Linux Win32 HLE for DirectDraw, sound, dialogs, files and input.
 Red Alert 2 builds and runs a skirmish in Chromium using the
 EA installation (23,201 lifted functions, zero errors and zero stubs).
-The browser test navigates the menus and checks advancing simulation frames.
+The browser test navigates the menus and deploys the MCV using browser mouse
+and keyboard input. The October 10, 2026 Chromium run reached simulation
+frame 595, recorded 2,236 non-silent Web Audio buffers, and reported zero
+JavaScript errors (60-second skirmish check).
 Yuri's Revenge has also lifted successfully (24,944 functions,
 zero errors and zero stubs); its WASM build has not yet been tested.
 
