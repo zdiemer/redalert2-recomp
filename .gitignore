@@ -1,6 +1,9 @@
 # Build output
 build/
 build-game/
+# Local WebAssembly toolchains, patched runtime and private build output
+.deps/
+build-wasm*/
 # Native Linux builds (build-linux.sh)
 build-linux/
 build-linux-game/

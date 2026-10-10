@@ -33,6 +33,11 @@ if(NOT GEN_SOURCES)
 endif()
 
 # ---- native Linux: the lifted C on runtime/win32hle (cmake/linux-i386.cmake)
+if(EMSCRIPTEN)
+  include(cmake/wasm.cmake)
+  return()
+endif()
+
 if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
   find_package(PkgConfig REQUIRED)
   pkg_check_modules(SDL2 REQUIRED IMPORTED_TARGET sdl2)

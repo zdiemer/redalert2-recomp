@@ -116,6 +116,9 @@ score screen at the end.
 
 ## Getting Started
 
+The fork's experimental **WebAssembly browser target** has its own
+[build and run instructions](docs/wasm.md). Browser bring-up is in progress.
+
 You need **your own copy of Red Alert 2 and Yuri's Revenge**: the Steam build
 of *Command & Conquer: Red Alert 2 and Yuri's Revenge* (the folder holding
 `game.exe` and `gamemd.exe`). One install has both games, and both are built:

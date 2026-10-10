@@ -116,6 +116,7 @@ static void report(const char *why) {
     fprintf(stderr, "\n");
 }
 
+#ifndef __EMSCRIPTEN__
 static void on_fault(int sig, siginfo_t *si, void *uc) {
     static volatile int once;
     (void)uc;
@@ -126,6 +127,7 @@ static void on_fault(int sig, siginfo_t *si, void *uc) {
     fflush(stderr);
     _exit(3);
 }
+#endif
 
 static void *watchdog(void *arg) {
     (void)arg;
@@ -425,6 +427,7 @@ int main(int argc, char **argv) {
         return 1;
     }
 
+#ifndef __EMSCRIPTEN__
     signal(SIGPIPE, SIG_IGN);           /* a recorder whose ffmpeg went away gets an error, not a signal */
     {   /* faults report on their own stack: a guest stack overflow is one */
         static uint8_t alt[1 << 16];
@@ -439,11 +442,12 @@ int main(int argc, char **argv) {
         sigaction(SIGFPE, &sa, NULL);
         sigaction(SIGILL, &sa, NULL);
     }
+#endif
 
     win32hle_register(g_ra2_shims);    /* first: the game's own answers win */
     recomp_host_init();
     hle_com_register_class(CLSID_Blowfish, ra2_blowfish_create);
-    printf(RA2_TITLE " recomp host (native Linux)\n  lifted functions in dispatch: %u\n", recomp_dispatch_count);
+    printf(RA2_TITLE " recomp host\n  lifted functions in dispatch: %u\n", recomp_dispatch_count);
 
     pe_image img;
     if (recomp_pe_map(exe_host, &img) != 0 || img.base != RA2_IMAGE_BASE) {

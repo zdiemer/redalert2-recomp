@@ -1,0 +1,84 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Red Alert 2 • WebAssembly</title>
+<style>
+  body { margin:0; background:#101214; color:#ddd; font:16px system-ui,sans-serif }
+  header,details { padding:16px; max-width:1000px; margin:auto }
+  h1 { font-size:24px; color:#ef4c47; margin:0 0 8px }
+  button,input { font:inherit; margin:8px 8px 8px 0 }
+  button { padding:8px 16px; cursor:pointer }
+  canvas { display:block; width:min(100%,1280px); aspect-ratio:4/3; margin:auto; background:#000 }
+  pre { white-space:pre-wrap; overflow:auto; max-height:260px; font-size:12px }
+</style>
+<header>
+  <h1>Red Alert 2 • WebAssembly</h1>
+  <p>Choose your installed game folder. Your files stay in this browser.</p>
+  <input id="files" type="file" webkitdirectory multiple>
+  <button id="start" disabled>Start game</button>
+  <button id="local" hidden>Use local installation</button>
+  <button id="fullscreen">Fullscreen</button>
+  <p id="status">Loading WebAssembly…</p>
+</header>
+<canvas id="canvas" width="800" height="600" tabindex="0" oncontextmenu="event.preventDefault()"></canvas>
+<details><summary>Runtime log</summary><pre id="log"></pre></details>
+<script>
+  const status = document.querySelector('#status');
+  const log = document.querySelector('#log');
+  const start = document.querySelector('#start');
+  let ready = false;
+  function output(line) {
+    log.textContent += line + '\n';
+    if (log.textContent.length > 100000) log.textContent = log.textContent.slice(-80000);
+    console.log(line);
+  }
+  var Module = {
+    canvas: document.querySelector('#canvas'), noInitialRun: true,
+    print: output, printErr: output,
+    onRuntimeInitialized() { ready = true; status.textContent = 'Choose your game folder to begin.'; update(); },
+    onAbort(reason) { status.textContent = 'Runtime stopped: ' + reason; },
+    onExit(code) { status.textContent = 'Game exited (' + code + '). Reload to play again.'; }
+  };
+  const files = document.querySelector('#files');
+  function update() { start.disabled = !ready || !files.files.length; }
+  files.onchange = update;
+  function accepted(name) {
+    return /\.(mix|mmx|yro|map|ini|csf|pkt|tlb)$/i.test(name) && !/^(movies|movmd)/i.test(name)
+      || /^(game\.exe|gamemd\.exe|blowfish\.dll)$/i.test(name);
+  }
+  async function launch(entries) {
+    start.disabled = true; document.querySelector('#local').disabled = true;
+    try {
+      Module.FS.mkdirTree('/game'); Module.FS.mkdirTree('/fonts');
+      let n = 0;
+      for (const entry of entries) {
+        status.textContent = `Loading ${++n}/${entries.length}: ${entry.name}`;
+        const data = new Uint8Array(await entry.read());
+        Module.FS.writeFile('/game/' + entry.name.toLowerCase(), data, {canOwn:true});
+      }
+      if (!Module.FS.analyzePath('/fonts/arial.ttf').exists) {
+        const response = await fetch('/local-font');
+        if (!response.ok) throw Error('Font missing: use the local server with --font pointing to a TrueType font.');
+        Module.FS.writeFile('/fonts/arial.ttf', new Uint8Array(await response.arrayBuffer()), {canOwn:true});
+      }
+      status.textContent = 'Starting game…'; Module.canvas.focus();
+      const args = new URLSearchParams(location.search).getAll('arg');
+      Module.callMain(['--game','/game','--run', ...args]);
+    } catch (error) { status.textContent = error.message; output(error.stack); }
+  }
+  start.onclick = () => launch([...files.files].filter(f => accepted(f.name)).map(f => ({name:f.name,read:()=>f.arrayBuffer()})));
+  document.querySelector('#fullscreen').onclick = () => Module.canvas.requestFullscreen();
+  if (!crossOriginIsolated) status.textContent = 'Thread support needs the COOP/COEP headers supplied by tools/wasm/serve.py.';
+  fetch('/local-manifest').then(r => r.ok ? r.json() : null).then(entries => {
+    if (!entries) return;
+    const button = document.querySelector('#local'); button.hidden = false;
+    button.onclick = () => launch(entries.map(e => ({name:e.name, read:async () => {
+      const r = await fetch('/local-game/' + encodeURIComponent(e.name));
+      if (!r.ok) throw Error('Cannot load ' + e.name);
+      return r.arrayBuffer();
+    }})));
+  });
+</script>
+{{{ SCRIPT }}}
+</html>
