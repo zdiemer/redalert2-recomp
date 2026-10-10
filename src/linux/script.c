@@ -207,6 +207,7 @@ static const char *press(int dlg, int ctrl, int32_t *shift) {
     while (!(d = find_dialog(dlg)) && now_ms() - w0 < 600000) sleep_ms(100);
     *shift += (int32_t)(now_ms() - w0);
     if (!d) return NULL;
+    fprintf(stderr, "[input] found dialog 0x%X for control %d\n", dlg, ctrl);
     sleep_ms(1500);                                      /* the menus slide their buttons in */
     mach_enter();
     uint32_t c = hle_dialog_item(d, (uint32_t)ctrl);
@@ -232,6 +233,7 @@ static const char *press(int dlg, int ctrl, int32_t *shift) {
     g_watch_ctrl = ctrl;
     g_watch_btn = target;
     click(target, lp);
+    fprintf(stderr, "[input] click posted: target=%08X button=%d up=%d command=%d\n", target, ctrl, g_watch_up, g_watch_cmd);
     const char *how = NULL;
     uint32_t t_up = 0;
     for (uint32_t t0 = now_ms(); !how; sleep_ms(100)) {
@@ -287,7 +289,9 @@ static int cmp_ev(const void *a, const void *b) {
 static void *script(void *unused) {
     static const uint32_t mvk[] = { 0x11, 0x10, 0x12 };  /* Ctrl, Shift, Alt */
     (void)unused;
+    fprintf(stderr, "[input] script started: %d events, waiting for main menu\n", g_nev);
     while (!g_menu_open) sleep_ms(50);
+    fprintf(stderr, "[input] main menu ready: clock=%u, origin=%u, first event=%.1f\n", now_ms(), g_t0, g_ev[0].t);
     int32_t shift = 0;
     for (int i = 0; i < g_nev; i++) {
         ev_t *e = &g_ev[i];

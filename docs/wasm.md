@@ -3,7 +3,11 @@
 Work in progress in [zdiemer/redalert2-recomp](https://github.com/zdiemer/redalert2-recomp).
 The browser target compiles the original game's lifted C, using pcrecomp's
 Linux Win32 HLE for DirectDraw, sound, dialogs, files and input.
-Browser gameplay is not yet verified.
+Red Alert 2 builds and reaches its rendered main menu in Chromium using the
+EA installation (23,201 lifted functions, zero errors and zero stubs).
+The skirmish test currently stalls on the first menu click: gameplay is not
+yet verified. Yuri's Revenge has also lifted successfully (24,944 functions,
+zero errors and zero stubs); its WASM build has not yet been tested.
 
 ## Build locally
 
@@ -35,15 +39,39 @@ committed or uploaded; every player builds from their own installation.
   copies the game to its original address, 4 MiB, in the reserved lower range.
   DLL resource images use ordinary allocations.
 - The blocking game runs on a pthread, with eight workers available for game
-  threads. The browser UI continues to process events. SDL2 presents through
-  Emscripten's canvas support; fonts use SDL2_ttf.
+  threads. The browser UI continues to process events. A Canvas2D presenter
+  displays the existing DirectDraw surfaces; the existing DirectSound mixer
+  feeds Web Audio on its own worker. Fonts use SDL2_ttf. SDL's stock browser
+  renderer and audio path failed when called from the game worker.
 - Browser adaptations are generated into the build directory by
   `tools/wasm/prepare_runtime.py`. The dependency checkout is left untouched.
 - Bink movies are skipped: the initial build uses the HLE's existing
-  no-decoder path. Multiplayer, mod restart, persistent saves and all game
-  modes need browser verification. Native UDP is unavailable in a browser.
-- The launcher loads selected game assets into memory. It omits movie
-  archives and uses a 2 GiB maximum WASM memory.
+  no-decoder path. The movie MIX archives are still required: initialization
+  fails without `MOVIES01.MIX`, before the main menu. Multiplayer, mod restart,
+  persistent saves and all game modes need browser verification.
+- The launcher loads selected game assets into memory (about 1 GiB for RA2)
+  and uses a 2 GiB maximum WASM memory. Native UDP is unavailable in a browser.
 
 To pass scripted host arguments, repeat `arg` in the page URL, for example
 `?arg=--debuglog&arg=--watchdog&arg=60`. Runtime output appears in the log.
+`--filetrace` logs file opens; the watchdog also reports each thread's saved
+guest function and stack address. Browser scheduling adapts HLE's fairness
+loop to sleep briefly because Emscripten's `sched_yield` does not yield a CPU
+time slice.
+
+## Browser validation
+
+Install Playwright with `py -3 -m pip install --target .deps/python playwright`
+and install its Chromium browser, or supply an existing one with `--chromium`.
+With the server running:
+
+```powershell
+py -3 tools/wasm/playtest.py --seconds 45
+py -3 tools/wasm/playtest.py --case skirmish --seconds 120
+```
+
+The runner saves browser logs, a screenshot and a JSON result in
+`work/wasm/<case>/`. The menu check requires dialog `0xE2` and changing frame
+checksums. The skirmish check additionally requires the game's own
+`Capture_Mouse()` log and an advancing game frame counter. A rendered menu
+does not pass the skirmish check.

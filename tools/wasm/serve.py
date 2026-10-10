@@ -14,7 +14,6 @@ def game_files(root, target):
         name = path.name.lower()
         if path.is_file() and (name in names or (
             path.suffix.lower() in {".mix", ".mmx", ".yro", ".map", ".ini", ".csf", ".pkt", ".tlb"}
-            and not name.startswith(("movies", "movmd"))
             and (target == "gamemd" or "md" not in name)
         )):
             yield path

@@ -44,12 +44,14 @@
   function update() { start.disabled = !ready || !files.files.length; }
   files.onchange = update;
   function accepted(name) {
-    return /\.(mix|mmx|yro|map|ini|csf|pkt|tlb)$/i.test(name) && !/^(movies|movmd)/i.test(name)
+    return /\.(mix|mmx|yro|map|ini|csf|pkt|tlb)$/i.test(name)
       || /^(game\.exe|gamemd\.exe|blowfish\.dll)$/i.test(name);
   }
   async function launch(entries) {
     start.disabled = true; document.querySelector('#local').disabled = true;
     try {
+      Module.ra2Audio = new AudioContext();
+      await Module.ra2Audio.resume();
       Module.FS.mkdirTree('/game'); Module.FS.mkdirTree('/fonts');
       let n = 0;
       for (const entry of entries) {
@@ -69,6 +71,24 @@
   }
   start.onclick = () => launch([...files.files].filter(f => accepted(f.name)).map(f => ({name:f.name,read:()=>f.arrayBuffer()})));
   document.querySelector('#fullscreen').onclick = () => Module.canvas.requestFullscreen();
+  Module.ra2Input = [];
+  const canvas = Module.canvas;
+  function queue(event) {
+    if (Module.ra2Input.length < 1024) Module.ra2Input.push(event);
+  }
+  for (const [type, down] of [['keydown',1], ['keyup',0]]) canvas.addEventListener(type, e => {
+    e.preventDefault(); queue([1,down,e.keyCode,0]);
+  });
+  for (const [type, base] of [['pointermove',0x200],['pointerdown',0x201],['pointerup',0x202]]) {
+    canvas.addEventListener(type, e => {
+      const r = canvas.getBoundingClientRect();
+      const x = Math.floor((e.clientX-r.left)*canvas.width/r.width);
+      const y = Math.floor((e.clientY-r.top)*canvas.height/r.height);
+      if (type === 'pointerdown') { canvas.focus(); canvas.setPointerCapture(e.pointerId); }
+      queue([0,base + (type === 'pointermove' ? 0 : e.button === 2 ? 3 : e.button === 1 ? 6 : 0),x,y]);
+      e.preventDefault();
+    });
+  }
   if (!crossOriginIsolated) status.textContent = 'Thread support needs the COOP/COEP headers supplied by tools/wasm/serve.py.';
   fetch('/local-manifest').then(r => r.ok ? r.json() : null).then(entries => {
     if (!entries) return;

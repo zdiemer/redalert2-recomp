@@ -132,6 +132,10 @@ static void on_fault(int sig, siginfo_t *si, void *uc) {
 static void *watchdog(void *arg) {
     (void)arg;
     sleep(g_watchdog_s);
+#ifdef __EMSCRIPTEN__
+    extern void wasm_machine_report(void);
+    wasm_machine_report();
+#endif
     fprintf(stderr, "\n[watchdog] %u s: in sub_%08X, last import %s, %u indirect calls\n",
             g_watchdog_s, g_cur_func, g_cur_import ? g_cur_import : "(none)", g_icall_count);
     fflush(stderr);
@@ -384,6 +388,7 @@ int main(int argc, char **argv) {
         else if (!strcmp(argv[i], "--mod") && i + 1 < argc) g_mod = argv[++i];
         else if (!strcmp(argv[i], "--watchdog") && i + 1 < argc) g_watchdog_s = (unsigned)strtoul(argv[++i], NULL, 0);
         else if (!strcmp(argv[i], "--trace")) win32hle_trace = 1;
+        else if (!strcmp(argv[i], "--filetrace")) setenv("HLE_FILETRACE", "1", 1);
         else if (!strcmp(argv[i], "--record") && i + 1 < argc) {
             static char path[PATH_MAX];                  /* absolute: the run chdirs into the game folder */
             const char *p = argv[++i];
