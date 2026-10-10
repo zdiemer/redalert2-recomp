@@ -76,6 +76,10 @@
     const path = '/game/'+name;
     let text = Module.FS.analyzePath(path).exists ? Module.FS.readFile(path,{encoding:'utf8'}) : '';
     text = setIni(setIni(text,'Video','ScreenWidth',width),'Video','ScreenHeight',height);
+    if (params.get('skipintro') === '1') {
+      text = setIni(text,'Intro','Play','no');
+      output('[browser] opening intro disabled');
+    }
     Module.FS.writeFile(path,text);
     Module.ra2Resolution = {width,height};
     output('[browser] widescreen '+width+'x'+height);

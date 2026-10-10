@@ -59,12 +59,14 @@ class Handler(SimpleHTTPRequestHandler):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--build", type=Path, default=Path("build-wasm-game"))
+    parser.add_argument("--build", type=Path, help="Build directory (defaults to the selected target's output)")
     parser.add_argument("--game-dir", type=Path)
     parser.add_argument("--target", choices=("game", "gamemd"), default="game")
     parser.add_argument("--font", type=Path, default=Path("C:/Windows/Fonts/arial.ttf"))
     parser.add_argument("--port", type=int, default=8080)
     args = parser.parse_args()
+    if args.build is None:
+        args.build = Path("build-wasm-game" if args.target == "game" else "build-wasm")
     if not (args.build / "ra2.html").is_file():
         parser.error("Build ra2.html first with tools/wasm/build.py")
     if not args.font.is_file():

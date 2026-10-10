@@ -19,14 +19,17 @@ async def test(args):
     for name in ("result.json", "screen.png"):
         (out / name).unlink(missing_ok=True)
     host_args = ["--debuglog", "--watchdog", str(args.seconds), "--waitlog", "__end_of_test__@9999"]
-    if args.case in ("skirmish", "campaign") or args.skip_intro:
+    if args.case in ("skirmish", "campaign"):
         os.environ["RA2_TARGET"] = args.target
         sys.path.insert(0, str(ROOT / "tools"))
         import playtest as native
     if args.case in ("skirmish", "campaign"):
         host_args.extend(native.CASES["skirmish-start" if args.case == "skirmish" else "campaign-allied"][0])
     host_args.extend(args.arg)
-    url = args.url + "?" + urlencode([("arg", a) for a in host_args] + [("resolution",args.resolution)])
+    query = [("arg", a) for a in host_args] + [("resolution",args.resolution)]
+    if args.skip_intro:
+        query.append(("skipintro","1"))
+    url = args.url + "?" + urlencode(query)
     logs, errors = [], []
     async with async_playwright() as p:
         options = {"headless":True, "args":["--enable-unsafe-swiftshader",*args.browser_arg]}
@@ -50,13 +53,6 @@ async def test(args):
                     }
                 });
             })();""")
-        if args.skip_intro:
-            async def skip_intro(route):
-                response = await route.fetch()
-                text = await response.text()
-                text = native.set_ini(text.encode(), "Intro", "Play", "no").decode()
-                await route.fulfill(response=response, body=text)
-            await page.route("**/local-game/RA2.INI", skip_intro)
         (out / "browser.log").write_text("")
         def record(message):
             logs.append(message)
@@ -88,9 +84,9 @@ async def test(args):
                 mouse[1] = box["y"]+y*box["height"]/await page.evaluate("Module.canvas.height")
             await page.mouse.move(*mouse, steps=steps)
         async def selected_unit():
-            # Tanya is the only player unit in this view. Track her selected
-            # health bar in canvas pixels; campaign movement emits no network
-            # MEGAMISSION log. Its white border distinguishes it from terrain.
+            # Track a selected unit's health bar in canvas pixels. The base
+            # Allied mission emits no MEGAMISSION log for movement; the white
+            # health-bar border distinguishes a selected unit from terrain.
             return await page.evaluate("""() => {
                 const w=Module.canvas.width,h=Module.canvas.height;
                 const p=Module.ra2Context.getImageData(0,0,w,h).data;
@@ -143,10 +139,18 @@ async def test(args):
                     movie_seen = movie_count
                 if args.case == "skirmish" and not deployed and any("key 0x48" in line for line in logs):
                     # Exercise DOM input through the scaled canvas, beyond the
-                    # host script that navigates the setup dialogs.
+                    # host script that navigates the setup dialogs. Home can
+                    # clamp at a map edge in widescreen, leaving the MCV away
+                    # from the view centre; select the visible starting group.
                     width, height = await page.evaluate("[Module.canvas.width,Module.canvas.height]")
-                    await move_game((width-168)/2,(height-54)/2)
-                    await page.mouse.click(*mouse)
+                    await move_game(16,16)
+                    await page.mouse.down()
+                    await asyncio.sleep(0.15)
+                    await move_game(width-188,height-52,steps=20)
+                    await asyncio.sleep(0.15)
+                    await page.mouse.up()
+                    await asyncio.sleep(0.2)
+                    await page.screenshot(path=str(out/"selection-skirmish.png"),timeout=10000)
                     await page.keyboard.press("d", delay=250)
                     deployed = True
                 # The mission begins with a scripted camera sequence. Wait
@@ -248,7 +252,7 @@ def main():
     parser.add_argument("--browser-arg",action="append",default=[],help="Extra Chromium flag for diagnostics")
     parser.add_argument("--output", type=Path)
     parser.add_argument("--resolution",default="640x480")
-    parser.add_argument("--skip-intro",action="store_true",help="Skip the first-run intro via the test's in-memory INI")
+    parser.add_argument("--skip-intro",action="store_true",help="Disable the opening intro using the launcher's skipintro=1 option")
     parser.add_argument("--no-skip-movies",action="store_true",help="Leave movies playing to measure their real-time pace")
     parser.add_argument("--debug-stall",action="store_true",help="Capture debugger stacks if the browser stops responding")
     parser.add_argument("--native-logs",action="store_true",help="Retain Chromium's native crash log")

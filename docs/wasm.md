@@ -19,7 +19,13 @@ browser paint before the presenter optimization, versus 61.7 displayed fps
 and 0.93 ms afterward. Simulation speed increased from 57.4 to 62.4 fps in
 the same skirmish at the same speed setting (Chrome 154, 90-second runs).
 Yuri's Revenge has also lifted successfully (24,944 functions,
-zero errors and zero stubs); its WASM build has not yet been tested.
+zero errors and zero stubs). Its Chrome 154 skirmish check passed at
+1920x1080, including pointer capture, drag selection and deployment orders.
+The 80-second run measured 61.8 displayed fps, 62.3 simulation fps and
+0.82 ms per browser paint, with zero JavaScript errors.
+Its uninterrupted opening movie check measured 15.0 fps. The Allied campaign
+check also verified a browser-issued move by tracking a selected unit's
+health bar through 90 pixels of movement.
 
 ## Build locally
 
@@ -46,6 +52,10 @@ Open <http://127.0.0.1:8080/ra2.html>. The local installation loads automaticall
 F11 toggles browser fullscreen. The first click captures the pointer; Escape
 releases capture. Audio resumes on the first click or keypress if the browser
 blocks autoplay. If no local installation is configured, a folder picker appears.
+Press Escape to skip a playing cutscene. Add `?skipintro=1` to the game URL
+to disable the long opening intro in the in-memory INI; short logo clips can
+still be skipped with Escape. This does not change the installed INI or skip
+campaign briefings automatically.
 The server binds to localhost and serves only its build directory plus selected
 game data. It supplies the COOP/COEP headers required for shared WASM memory.
 Alternatively select your game folder in the browser. A TrueType font is
@@ -62,10 +72,13 @@ For Yuri's Revenge, use a separate port to keep both games available:
 ```powershell
 py -3 tools/wasm/bootstrap.py --target gamemd --game-dir "C:\Program Files\EA Games\Command and Conquer Red Alert II"
 py -3 tools/wasm/build.py --target gamemd
-py -3 tools/wasm/serve.py --target gamemd --build build-wasm --port 8081 --game-dir "C:\Program Files\EA Games\Command and Conquer Red Alert II"
+py -3 tools/wasm/serve.py --target gamemd --port 8081 --game-dir "C:\Program Files\EA Games\Command and Conquer Red Alert II"
 ```
 
-Open <http://127.0.0.1:8081/ra2.html>. Each game has its own generated sources
+Open <http://127.0.0.1:8081/ra2.html?skipintro=1> to skip the long opening
+intro, or omit the query to use the installed intro setting. The server
+selects the target's build directory automatically; `--build` overrides it.
+Each game has its own generated sources
 and output directory. No retail files, lifted sources or WASM output are
 committed or uploaded; every player builds from their own installation.
 
@@ -97,7 +110,8 @@ committed or uploaded; every player builds from their own installation.
   The movie MIX archives are required: initialization
   fails without `MOVIES01.MIX`, before the main menu. Multiplayer, mod restart,
   persistent saves and all game modes need browser verification.
-- The launcher loads selected game assets into memory (about 1 GiB for RA2)
+- The launcher loads selected game assets into memory (about 1 GiB for RA2,
+  1.8 GiB for Yuri's Revenge)
   and uses a 2 GiB maximum WASM memory. Native UDP is unavailable in a browser.
 
 To pass scripted host arguments, repeat `arg` in the page URL, for example
@@ -119,21 +133,22 @@ py -3 tools/wasm/playtest.py --case video --seconds 35
 py -3 tools/wasm/playtest.py --case skirmish --skip-intro --resolution auto --seconds 90
 py -3 tools/wasm/playtest.py --case skirmish --skip-intro --resolution auto --seconds 90 --performance
 py -3 tools/wasm/playtest.py --case campaign --skip-intro --seconds 200
+py -3 tools/wasm/playtest.py --target gamemd --url http://127.0.0.1:8081/ra2.html --case skirmish --skip-intro --resolution auto --seconds 90 --performance
 ```
 
 The runner saves browser logs, a screenshot and a JSON result in
 `work/wasm/<case>/`. The menu check requires dialog `0xE2` and changing frame
 checksums. The skirmish check additionally requires the game's own
 `Capture_Mouse()` log and an advancing game frame counter. It then uses the
-browser's mouse and keyboard on the scaled canvas to deploy the MCV and
-requires the game's `Adding event DEPLOY` log. Audio state and non-silent
+browser's drag selection and keyboard on the scaled canvas to deploy starting
+units and requires the game's `Adding event DEPLOY` log. Audio state and non-silent
 buffer counts are also recorded. A rendered menu does not pass the skirmish check.
 The campaign case enters the Allied campaign and checks a browser-issued
 unit order. Both cases check pointer lock, and movie screenshots are saved
 before the test skips each full-screen clip. Radar messages play normally.
-`--skip-intro` changes only the test's in-memory INI; ordinary launch preserves
-the installation's intro setting. The video case leaves movies uninterrupted
-and checks their pace. `--resolution auto` uses an emulated 1920x1080 display
+`--skip-intro` exercises the launcher's `skipintro=1` option; ordinary launch
+preserves the installation's intro setting. The video case leaves movies
+uninterrupted and checks their pace. `--resolution auto` uses an emulated 1920x1080 display
 inside a differently sized browser window, checking the game's INI resolution
 rather than CSS scaling. Use `--chromium` to select an installed browser.
 `--performance` also writes `performance.json` and reports simulation fps,
