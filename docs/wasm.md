@@ -16,6 +16,10 @@ zero errors and zero stubs); its WASM build has not yet been tested.
 
 Python 3.10+, Git, CMake and Ninja are required. On Windows the build script
 also finds the CMake and Ninja shipped with Visual Studio Community.
+The Bink decoder build needs MSYS2 with `make` and the MinGW C compiler on
+Windows, or a POSIX shell, Make and a native C compiler on Linux/macOS.
+`build.py` builds pinned FFmpeg 7.1.2 video/audio decoder libraries on its
+first run; `build_ffmpeg.py` can also be run separately.
 The bootstrap downloads Emscripten 6.0.12 and pcrecomp's Linux HLE revision
 `12a3480e4691ae43bf0f3d6504f5da414b6e2bc8` into `.deps/`.
 
@@ -25,11 +29,20 @@ py -3 tools/wasm/build.py
 py -3 tools/wasm/serve.py --game-dir "C:\Program Files\EA Games\Command and Conquer Red Alert II"
 ```
 
-Open <http://127.0.0.1:8080/ra2.html> and choose **Use local installation**.
+Open <http://127.0.0.1:8080/ra2.html>. The local installation loads automatically.
+F11 toggles browser fullscreen. The first click captures the pointer; Escape
+releases capture. Audio resumes on the first click or keypress if the browser
+blocks autoplay. If no local installation is configured, a folder picker appears.
 The server binds to localhost and serves only its build directory plus selected
 game data. It supplies the COOP/COEP headers required for shared WASM memory.
 Alternatively select your game folder in the browser. A TrueType font is
 provided by the server (`--font` changes it; Windows defaults to Arial).
+
+The launcher sets the recomp's `[Video] ScreenWidth` and `ScreenHeight` in
+the in-memory `RA2.INI` (or `RA2MD.INI`) to the display's pixel dimensions.
+The installation's INI is not modified. The menus keep their original size;
+missions render at the chosen widescreen resolution, as described in
+[hires.md](hires.md). For a fixed test size, add `?resolution=1920x1080`.
 
 For Yuri's Revenge, pass `--target gamemd` to all three commands and
 `--build build-wasm` to the server. Each game has its own generated sources
@@ -48,10 +61,10 @@ committed or uploaded; every player builds from their own installation.
   renderer and audio path failed when called from the game worker.
 - Browser adaptations are generated into the build directory by
   `tools/wasm/prepare_runtime.py`. The dependency checkout is left untouched.
-- Bink movies are skipped: the initial build uses the HLE's existing
-  no-decoder path with `BinkWait` reporting no available frame. Returning
-  "ready" forever after a failed open traps the animated title's catch-up
-  loop and prevents menu input. The movie MIX archives are still required: initialization
+- Bink movies use FFmpeg's video and audio decoders in WASM through the HLE.
+  End-of-movie waits stop the title control's frame catch-up loop. A fallback
+  no-decoder path also reports no available frame after a failed open.
+  The movie MIX archives are required: initialization
   fails without `MOVIES01.MIX`, before the main menu. Multiplayer, mod restart,
   persistent saves and all game modes need browser verification.
 - The launcher loads selected game assets into memory (about 1 GiB for RA2)
@@ -73,6 +86,7 @@ With the server running:
 ```powershell
 py -3 tools/wasm/playtest.py --seconds 45
 py -3 tools/wasm/playtest.py --case skirmish --seconds 120
+py -3 tools/wasm/playtest.py --case campaign --seconds 150
 ```
 
 The runner saves browser logs, a screenshot and a JSON result in
@@ -82,3 +96,10 @@ checksums. The skirmish check additionally requires the game's own
 browser's mouse and keyboard on the scaled canvas to deploy the MCV and
 requires the game's `Adding event DEPLOY` log. Audio state and non-silent
 buffer counts are also recorded. A rendered menu does not pass the skirmish check.
+The campaign case enters the Allied campaign and checks a browser-issued
+unit order. Both cases check pointer lock, and movie screenshots are saved
+before the test skips each clip. Ordinary launch plays movies normally.
+
+FFmpeg sources are pinned to `f893221c8d89cb798b829bebe71d55e1a3f242fd`
+(7.1.2), using its LGPL 2.1-or-later configuration; source and license are
+available in `.deps/ffmpeg` and at <https://github.com/FFmpeg/FFmpeg>.

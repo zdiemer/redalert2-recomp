@@ -4,6 +4,7 @@ import os
 from pathlib import Path
 import shutil
 import subprocess
+import sys
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -15,6 +16,8 @@ def main():
     parser.add_argument("--opt", default="-O1")
     args = parser.parse_args()
     sdk = Path(os.environ.get("EMSDK", ROOT / ".deps/emsdk"))
+    if not (ROOT / ".deps/ffmpeg-wasm/install/lib/libavformat.a").exists():
+        subprocess.run([sys.executable, str(ROOT / "tools/wasm/build_ffmpeg.py")], check=True)
     cmake = shutil.which("cmake")
     if not cmake and os.name == "nt":
         candidates = list(Path("C:/Program Files/Microsoft Visual Studio").glob(

@@ -58,6 +58,14 @@ static inline uint64_t __rdtsc(void) { return (uint64_t)(emscripten_get_now() * 
                            'static void k_NoFrame(void) { RET(1, 1); }')
             text = replace(text, '{ "_BinkWait@4", k_ret0_1 }',
                            '{ "_BinkWait@4", k_NoFrame }')
+            # End-of-movie must stop the guest's frame catch-up loop even
+            # when the host was too slow to meet the last frame deadline.
+            text = replace(text, 'if (b->paused) RET(1, 1);',
+                           'if (!b || b->paused || b->LastFrameNum >= b->Frames) RET(1, 1);')
+            text = replace(text, 'AVSEEK_FLAG_BACKWARD | AVSEEK_FLAG_BYTE',
+                           'AVSEEK_FLAG_BACKWARD')
+            text = replace(text, 'b->done = 0, b->FrameNum = 1;',
+                           'b->done = 0, b->FrameNum = 1, b->LastFrameNum = 0;')
         elif path.name == "host_lite.c":
             # sched_yield is a no-op in Emscripten. Give the notified worker
             # time to wake before the current worker takes the mutex again.

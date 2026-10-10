@@ -2,103 +2,150 @@
 <html lang="en">
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Red Alert 2 • WebAssembly</title>
+<title>Red Alert 2</title>
 <style>
-  body { margin:0; background:#101214; color:#ddd; font:16px system-ui,sans-serif }
-  header,details { padding:16px; max-width:1000px; margin:auto }
-  h1 { font-size:24px; color:#ef4c47; margin:0 0 8px }
-  button,input { font:inherit; margin:8px 8px 8px 0 }
-  button { padding:8px 16px; cursor:pointer }
-  canvas { display:block; width:min(100%,1280px); aspect-ratio:4/3; margin:auto; background:#000 }
-  pre { white-space:pre-wrap; overflow:auto; max-height:260px; font-size:12px }
+  body { margin:0; background:#000; color:#ddd; font:16px system-ui,sans-serif; overflow:hidden }
+  #view { height:100dvh; display:grid; place-items:center }
+  canvas { display:block; outline:none; background:#000; touch-action:none }
+  #status,#fallback { position:fixed; top:16px; left:16px; z-index:2; background:#101214e8; padding:12px }
+  #status[hidden],#fallback[hidden] { display:none }
+  #cursor { position:fixed; width:18px; height:24px; z-index:3; pointer-events:none; display:none }
+  details { position:fixed; bottom:0; left:0; max-width:100%; z-index:2; background:#101214e8 }
+  details:not([open]) { opacity:0.25 }
+  pre { white-space:pre-wrap; overflow:auto; max-height:200px; font-size:12px }
 </style>
-<header>
-  <h1>Red Alert 2 • WebAssembly</h1>
-  <p>Choose your installed game folder. Your files stay in this browser.</p>
-  <input id="files" type="file" webkitdirectory multiple>
-  <button id="start" disabled>Start game</button>
-  <button id="local" hidden>Use local installation</button>
-  <button id="fullscreen">Fullscreen</button>
-  <p id="status">Loading WebAssembly…</p>
-</header>
-<canvas id="canvas" width="800" height="600" tabindex="0" oncontextmenu="event.preventDefault()"></canvas>
+<p id="status">Loading Red Alert 2…</p>
+<div id="fallback" hidden><label>Choose your installed game folder: <input id="files" type="file" webkitdirectory multiple></label></div>
+<div id="view"><canvas id="canvas" width="800" height="600" tabindex="0" oncontextmenu="event.preventDefault()"></canvas></div>
+<svg id="cursor" viewBox="0 0 18 24"><path d="M1 1V20L6 15L10 23L14 21L10 13H17Z" fill="white" stroke="black"/></svg>
 <details><summary>Runtime log</summary><pre id="log"></pre></details>
 <script>
   const status = document.querySelector('#status');
   const log = document.querySelector('#log');
-  const start = document.querySelector('#start');
-  let ready = false;
+  const canvas = document.querySelector('#canvas');
+  const cursor = document.querySelector('#cursor');
+  const params = new URLSearchParams(location.search);
+  let ready = false, entries, launched = false;
   function output(line) {
     log.textContent += line + '\n';
     if (log.textContent.length > 100000) log.textContent = log.textContent.slice(-80000);
     console.log(line);
   }
   var Module = {
-    canvas: document.querySelector('#canvas'), noInitialRun: true,
-    print: output, printErr: output,
-    onRuntimeInitialized() { ready = true; status.textContent = 'Choose your game folder to begin.'; update(); },
-    onAbort(reason) { status.textContent = 'Runtime stopped: ' + reason; },
-    onExit(code) { status.textContent = 'Game exited (' + code + '). Reload to play again.'; }
+    canvas, noInitialRun:true, ra2Input:[], ra2Cursor:{x:400,y:300},
+    print:output, printErr:output,
+    onRuntimeInitialized() { ready = true; maybeLaunch(); },
+    onAbort(reason) { status.hidden = false; status.textContent = 'Runtime stopped: ' + reason; },
+    onExit(code) { status.hidden = false; status.textContent = 'Game exited (' + code + '). Reload to play again.'; }
   };
-  const files = document.querySelector('#files');
-  function update() { start.disabled = !ready || !files.files.length; }
-  files.onchange = update;
-  function accepted(name) {
-    return /\.(mix|mmx|yro|map|ini|csf|pkt|tlb)$/i.test(name)
-      || /^(game\.exe|gamemd\.exe|blowfish\.dll)$/i.test(name);
+  function fitCanvas() {
+    const scale = Math.min(innerWidth/canvas.width, innerHeight/canvas.height);
+    canvas.style.width = canvas.width*scale + 'px';
+    canvas.style.height = canvas.height*scale + 'px';
+    drawCursor();
   }
-  async function launch(entries) {
-    start.disabled = true; document.querySelector('#local').disabled = true;
+  function drawCursor() {
+    const r = canvas.getBoundingClientRect(); const p = Module.ra2Cursor;
+    cursor.style.left = r.left + p.x*r.width/canvas.width + 'px';
+    cursor.style.top = r.top + p.y*r.height/canvas.height + 'px';
+    cursor.style.display = document.pointerLockElement === canvas && Module.ra2SystemCursor ? 'block' : 'none';
+  }
+  Module.ra2Resize = fitCanvas;
+  Module.ra2DrawCursor = drawCursor;
+  addEventListener('resize', fitCanvas);
+  document.addEventListener('pointerlockchange', () => { canvas.focus(); drawCursor(); });
+  function setIni(text, section, key, value) {
+    const lines = text.split(/\r?\n/); let active = false, found = false, present = false;
+    for (let i=0; i<lines.length; i++) {
+      if (/^\s*\[/.test(lines[i])) {
+        if (active && !found) { lines.splice(i++,0,key+'='+value); found=true; }
+        active = lines[i].trim().toLowerCase() === '['+section.toLowerCase()+']';
+        present ||= active;
+      } else if (active && lines[i].split('=')[0].trim().toLowerCase() === key.toLowerCase()) {
+        lines[i] = key+'='+value; found=true;
+      }
+    }
+    if (!found) { if (!present) lines.push('['+section+']'); lines.push(key+'='+value); }
+    return lines.join('\r\n');
+  }
+  function widescreen() {
+    const specified = /^(\d+)x(\d+)$/.exec(params.get('resolution') || '');
+    const width = Math.max(640, Math.round(specified ? +specified[1] : screen.width*devicePixelRatio));
+    const height = Math.max(480, Math.round(specified ? +specified[2] : screen.height*devicePixelRatio));
+    const name = entries.some(e=>e.name.toLowerCase()==='game.exe') ? 'ra2.ini' : 'ra2md.ini';
+    const path = '/game/'+name;
+    let text = Module.FS.analyzePath(path).exists ? Module.FS.readFile(path,{encoding:'utf8'}) : '';
+    text = setIni(setIni(text,'Video','ScreenWidth',width),'Video','ScreenHeight',height);
+    Module.FS.writeFile(path,text);
+    Module.ra2Resolution = {width,height};
+    output('[browser] widescreen '+width+'x'+height);
+  }
+  async function maybeLaunch() {
+    if (!ready || !entries || launched) return;
+    launched = true;
     try {
       Module.ra2Audio = new AudioContext();
-      await Module.ra2Audio.resume();
       Module.FS.mkdirTree('/game'); Module.FS.mkdirTree('/fonts');
       let n = 0;
       for (const entry of entries) {
         status.textContent = `Loading ${++n}/${entries.length}: ${entry.name}`;
-        const data = new Uint8Array(await entry.read());
-        Module.FS.writeFile('/game/' + entry.name.toLowerCase(), data, {canOwn:true});
+        Module.FS.writeFile('/game/'+entry.name.toLowerCase(),new Uint8Array(await entry.read()),{canOwn:true});
       }
-      if (!Module.FS.analyzePath('/fonts/arial.ttf').exists) {
-        const response = await fetch('/local-font');
-        if (!response.ok) throw Error('Font missing: use the local server with --font pointing to a TrueType font.');
-        Module.FS.writeFile('/fonts/arial.ttf', new Uint8Array(await response.arrayBuffer()), {canOwn:true});
-      }
-      status.textContent = 'Starting game…'; Module.canvas.focus();
-      const args = new URLSearchParams(location.search).getAll('arg');
-      Module.callMain(['--game','/game','--run', ...args]);
-    } catch (error) { status.textContent = error.message; output(error.stack); }
+      const response = await fetch('/local-font');
+      if (!response.ok) throw Error('Font missing: set --font to a TrueType font when starting the local server.');
+      Module.FS.writeFile('/fonts/arial.ttf',new Uint8Array(await response.arrayBuffer()),{canOwn:true});
+      widescreen();
+      status.textContent = 'Starting game…'; canvas.focus();
+      Module.callMain(['--game','/game','--run',...params.getAll('arg')]);
+    } catch (error) { status.hidden=false; status.textContent=error.message; output(error.stack); }
   }
-  start.onclick = () => launch([...files.files].filter(f => accepted(f.name)).map(f => ({name:f.name,read:()=>f.arrayBuffer()})));
-  document.querySelector('#fullscreen').onclick = () => Module.canvas.requestFullscreen();
-  Module.ra2Input = [];
-  const canvas = Module.canvas;
   function queue(event) {
-    if (Module.ra2Input.length < 1024) Module.ra2Input.push(event);
+    const q = Module.ra2Input;
+    if (event[0]===0 && event[1]===0x200 && q.length && q.at(-1)[0]===0 && q.at(-1)[1]===0x200) q[q.length-1]=event;
+    else if (q.length<1024) q.push(event);
   }
-  for (const [type, down] of [['keydown',1], ['keyup',0]]) canvas.addEventListener(type, e => {
-    e.preventDefault(); queue([1,down,e.keyCode,0]);
+  function resumeAudio() { Module.ra2Audio?.resume().catch(()=>{}); }
+  const held = new Set();
+  for (const [type,down] of [['keydown',1],['keyup',0]]) canvas.addEventListener(type,e=>{
+    if (e.code==='F11') return;
+    resumeAudio(); e.preventDefault();
+    if (down) held.add(e.keyCode); else held.delete(e.keyCode);
+    queue([1,down,e.keyCode,0]);
   });
-  for (const [type, base] of [['pointermove',0x200],['pointerdown',0x201],['pointerup',0x202]]) {
-    canvas.addEventListener(type, e => {
-      const r = canvas.getBoundingClientRect();
-      const x = Math.floor((e.clientX-r.left)*canvas.width/r.width);
-      const y = Math.floor((e.clientY-r.top)*canvas.height/r.height);
-      if (type === 'pointerdown') { canvas.focus(); canvas.setPointerCapture(e.pointerId); }
-      queue([0,base + (type === 'pointermove' ? 0 : e.button === 2 ? 3 : e.button === 1 ? 6 : 0),x,y]);
-      e.preventDefault();
+  for (const [type,base] of [['pointermove',0x200],['pointerdown',0x201],['pointerup',0x202]]) {
+    canvas.addEventListener(type,e=>{
+      const r = canvas.getBoundingClientRect(); const p = Module.ra2Cursor;
+      if (document.pointerLockElement===canvas) {
+        if (type==='pointermove') { p.x+=e.movementX*canvas.width/r.width; p.y+=e.movementY*canvas.height/r.height; }
+      } else { p.x=(e.clientX-r.left)*canvas.width/r.width; p.y=(e.clientY-r.top)*canvas.height/r.height; }
+      p.x=Math.max(0,Math.min(canvas.width-1,p.x)); p.y=Math.max(0,Math.min(canvas.height-1,p.y));
+      if (type==='pointerdown') {
+        resumeAudio(); canvas.focus(); canvas.setPointerCapture(e.pointerId);
+        if (document.pointerLockElement!==canvas) canvas.requestPointerLock()?.catch(()=>{});
+      }
+      queue([0,base+(type==='pointermove'?0:e.button===2?3:e.button===1?6:0),Math.floor(p.x),Math.floor(p.y)]);
+      drawCursor(); e.preventDefault();
     });
   }
-  if (!crossOriginIsolated) status.textContent = 'Thread support needs the COOP/COEP headers supplied by tools/wasm/serve.py.';
-  fetch('/local-manifest').then(r => r.ok ? r.json() : null).then(entries => {
-    if (!entries) return;
-    const button = document.querySelector('#local'); button.hidden = false;
-    button.onclick = () => launch(entries.map(e => ({name:e.name, read:async () => {
-      const r = await fetch('/local-game/' + encodeURIComponent(e.name));
-      if (!r.ok) throw Error('Cannot load ' + e.name);
-      return r.arrayBuffer();
-    }})));
+  addEventListener('blur',()=>{
+    for (const key of held) queue([1,0,key,0]); held.clear();
+    for (const message of [0x202,0x205,0x208]) queue([0,message,Math.floor(Module.ra2Cursor.x),Math.floor(Module.ra2Cursor.y)]);
   });
+  document.querySelector('#files').onchange = e=>{
+    entries = [...e.target.files].filter(f=>/\.(mix|mmx|yro|map|ini|csf|pkt|tlb)$/i.test(f.name)||/^(game\.exe|gamemd\.exe|blowfish\.dll)$/i.test(f.name))
+      .map(f=>({name:f.name,read:()=>f.arrayBuffer()}));
+    document.querySelector('#fallback').hidden=true; maybeLaunch();
+  };
+  if (!crossOriginIsolated) status.textContent='Start the local server to enable browser threads.';
+  fetch('/local-manifest').then(r=>r.ok?r.json():null).then(manifest=>{
+    if (!manifest) { status.hidden=true; document.querySelector('#fallback').hidden=false; return; }
+    entries = manifest.map(e=>({name:e.name,read:async()=>{
+      const r=await fetch('/local-game/'+encodeURIComponent(e.name));
+      if (!r.ok) throw Error('Cannot load '+e.name); return r.arrayBuffer();
+    }}));
+    maybeLaunch();
+  }).catch(error=>{ status.textContent=error.message; });
+  fitCanvas();
 </script>
 {{{ SCRIPT }}}
 </html>
