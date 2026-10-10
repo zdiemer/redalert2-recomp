@@ -44,8 +44,17 @@ async def test(args):
             await page.locator("#local").click(timeout=10000)
             # Loading assets and compiling this large module may take a while.
             await page.wait_for_function("document.querySelector('#log').textContent.includes('entering 0x') || document.querySelector('#status').textContent.includes('stopped:')", timeout=120000)
+            deployed = False
             for _ in range(args.seconds):
                 await asyncio.sleep(1)
+                if args.case == "skirmish" and not deployed and any("key 0x48" in line for line in logs):
+                    # Exercise DOM input through the scaled canvas, beyond the
+                    # host script that navigates the setup dialogs.
+                    box = await page.locator("#canvas").bounding_box()
+                    await page.mouse.click(box["x"] + box["width"]*236/640,
+                                           box["y"] + box["height"]*213/480, delay=250)
+                    await page.keyboard.press("d", delay=250)
+                    deployed = True
                 if errors or any("FATAL:" in line or "Aborted(" in line for line in logs):
                     break
             await page.screenshot(path=str(out / "screen.png"))
@@ -55,8 +64,10 @@ async def test(args):
             if args.case == "skirmish":
                 frames = [int(n) for n in re.findall(r'game frame (\d+)', text)]
                 checks["ingame"] = "[game] Capture_Mouse()" in text and len(set(frames)) >= 3
+                checks["browser_input"] = "Adding event DEPLOY" in text
+            audio = await page.evaluate("({state:Module.ra2Audio?.state, chunks:Module.ra2AudioChunks || 0})")
             result = {"status":await page.locator("#status").inner_text(), "errors":errors,
-                      "isolated":await page.evaluate("crossOriginIsolated"), "checks":checks}
+                      "isolated":await page.evaluate("crossOriginIsolated"), "audio":audio, "checks":checks}
             (out / "result.json").write_text(json.dumps(result, indent=2))
             print(json.dumps(result), flush=True)
         finally:

@@ -3,10 +3,10 @@
 Work in progress in [zdiemer/redalert2-recomp](https://github.com/zdiemer/redalert2-recomp).
 The browser target compiles the original game's lifted C, using pcrecomp's
 Linux Win32 HLE for DirectDraw, sound, dialogs, files and input.
-Red Alert 2 builds and reaches its rendered main menu in Chromium using the
+Red Alert 2 builds and runs a skirmish in Chromium using the
 EA installation (23,201 lifted functions, zero errors and zero stubs).
-The skirmish test currently stalls on the first menu click: gameplay is not
-yet verified. Yuri's Revenge has also lifted successfully (24,944 functions,
+The browser test navigates the menus and checks advancing simulation frames.
+Yuri's Revenge has also lifted successfully (24,944 functions,
 zero errors and zero stubs); its WASM build has not yet been tested.
 
 ## Build locally
@@ -46,7 +46,9 @@ committed or uploaded; every player builds from their own installation.
 - Browser adaptations are generated into the build directory by
   `tools/wasm/prepare_runtime.py`. The dependency checkout is left untouched.
 - Bink movies are skipped: the initial build uses the HLE's existing
-  no-decoder path. The movie MIX archives are still required: initialization
+  no-decoder path with `BinkWait` reporting no available frame. Returning
+  "ready" forever after a failed open traps the animated title's catch-up
+  loop and prevents menu input. The movie MIX archives are still required: initialization
   fails without `MOVIES01.MIX`, before the main menu. Multiplayer, mod restart,
   persistent saves and all game modes need browser verification.
 - The launcher loads selected game assets into memory (about 1 GiB for RA2)
@@ -73,5 +75,7 @@ py -3 tools/wasm/playtest.py --case skirmish --seconds 120
 The runner saves browser logs, a screenshot and a JSON result in
 `work/wasm/<case>/`. The menu check requires dialog `0xE2` and changing frame
 checksums. The skirmish check additionally requires the game's own
-`Capture_Mouse()` log and an advancing game frame counter. A rendered menu
-does not pass the skirmish check.
+`Capture_Mouse()` log and an advancing game frame counter. It then uses the
+browser's mouse and keyboard on the scaled canvas to deploy the MCV and
+requires the game's `Adding event DEPLOY` log. Audio state and non-silent
+buffer counts are also recorded. A rendered menu does not pass the skirmish check.

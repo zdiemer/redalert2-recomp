@@ -13,7 +13,7 @@ add_executable(ra2 src/linux/main.c src/linux/blowfish.c src/linux/script.c
 target_include_directories(ra2 PRIVATE src/linux src/runtime ${GEN_DIR} ${HLE})
 target_compile_definitions(ra2 PRIVATE RECOMP_RETADDR=0u RECOMP_FLAT_MEMORY RECOMP_LOCAL_REGS)
 target_compile_options(ra2 PRIVATE -pthread -fno-strict-aliasing -fwrapv -sUSE_SDL=2 -sUSE_SDL_TTF=2)
-set(GEN_OPT "-O2" CACHE STRING "optimisation for the generated C")
+set(GEN_OPT "-O1" CACHE STRING "optimisation for the generated C")
 set_source_files_properties(${GEN_SOURCES} PROPERTIES COMPILE_OPTIONS "-w;${GEN_OPT}")
 target_link_options(ra2 PRIVATE -O1 -g2 -pthread -sUSE_SDL=2 -sUSE_SDL_TTF=2
   -sGLOBAL_BASE=16777216 -sINITIAL_MEMORY=536870912 -sMAXIMUM_MEMORY=2147483648

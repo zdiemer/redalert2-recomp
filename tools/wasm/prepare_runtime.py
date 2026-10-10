@@ -49,10 +49,19 @@ static inline uint64_t __rdtsc(void) { return (uint64_t)(emscripten_get_now() * 
             start = text.index('static int audio_open(void) {')
             end = text.index('\n/* the object:', start)
             text = text[:start] + '#include "audio.h"\n' + text[end:]
+        elif path.name == "bink.c":
+            # The RA2 title control still polls after BinkOpen fails. Returning
+            # "frame ready" forever traps its catch-up loop in BinkDoFrame.
+            # Without a decoder there is never a frame available to present.
+            text = replace(text, 'static void k_ret0_1(void) { RET(0, 1); }',
+                           'static void k_ret0_1(void) { RET(0, 1); }\n'
+                           'static void k_NoFrame(void) { RET(1, 1); }')
+            text = replace(text, '{ "_BinkWait@4", k_ret0_1 }',
+                           '{ "_BinkWait@4", k_NoFrame }')
         elif path.name == "host_lite.c":
             # sched_yield is a no-op in Emscripten. Give the notified worker
             # time to wake before the current worker takes the mutex again.
-            text = text.replace('#include <pthread.h>', '#include <pthread.h>\n#include <unistd.h>')
+            text = text.replace('#include <pthread.h>', '#include <pthread.h>\n#include <unistd.h>\n#include <emscripten.h>')
             text = text.replace('sched_yield();', 'usleep(1000);')
             text = replace(text, 'static __thread mstate g_ms;', '''static __thread mstate g_ms;
 static mstate *web_states[64];
@@ -60,6 +69,13 @@ static volatile unsigned web_states_count;''')
             text = replace(text, 'g_ms.inited   = 1;', '''g_ms.inited   = 1;
             unsigned index = __sync_fetch_and_add(&web_states_count, 1);
             if (index < 64) web_states[index] = &g_ms;''')
+            text = replace(text, 'void hle_block_begin(void) {', '''void hle_block_begin(void) {
+    static __thread double last_stack;
+    double now_stack = emscripten_get_now();
+    if (getenv("HLE_FILETRACE") && now_stack - last_stack > 8000) {
+        last_stack = now_stack;
+        EM_ASM({ console.log('wait stack guest=' + $0.toString(16) + ' ' + new Error().stack); }, g_cur_func);
+    }''')
             text += '''
 void wasm_machine_report(void) {
     fprintf(stderr, "[machine] waiters=%d generation=%u\\n", g_waiters, g_owner_gen);
