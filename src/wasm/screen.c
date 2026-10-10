@@ -14,11 +14,10 @@ void (*hle_screen_frame_hook)(const uint8_t *, int, int, int, int);
 int (*hle_screen_compose_hook)(const uint8_t *, int, int, int, uint32_t *);
 void (*hle_screen_settings_hook)(const char *, int, int);
 static int g_headless;
-static uint32_t g_next;
 static _Atomic int g_presenting;
-static uint8_t *g_pixels;
+static uint32_t *g_pixels;
 static size_t g_pixels_size;
-static uint32_t g_palette[256];
+static uint32_t g_rgb565[65536];
 /* One DOM producer and one game-thread consumer. Input polling must never
  * synchronously proxy to the browser: PeekMessage can run thousands of times
  * between frames, starving presentation and audio. Publish complete events
@@ -47,6 +46,12 @@ void hle_screen_title(const char *title) {
 int hle_screen_open(const char *title, int fullscreen, int headless) {
     (void)fullscreen;
     g_headless = headless;
+    for (unsigned p = 0; p < 65536; p++) {
+        unsigned r = ((p >> 11)*255+15)/31;
+        unsigned g = (((p >> 5)&63)*255+31)/63;
+        unsigned b = ((p&31)*255+15)/31;
+        g_rgb565[p] = r | (g << 8) | (b << 16) | 0xFF000000u;
+    }
     hle_cursor_hook = warp;
     MAIN_THREAD_EM_ASM({ Module.ra2AttachInput($0); }, &g_input);
     hle_screen_title(title);
@@ -63,7 +68,12 @@ static void pump_input(void) {
     uint32_t read = atomic_load_explicit(&g_input.read, memory_order_relaxed);
     uint32_t write = atomic_load_explicit(&g_input.write, memory_order_acquire);
     while (read != write && pending < 1024) {
-        memcpy(events + 4*pending++, g_input.events + 4*(read++ % 1024), 4*sizeof(int32_t));
+        const int32_t *event = g_input.events + 4*(read++ % 1024);
+        /* Keep the newest position between button/key transitions rather
+         * than making the guest replay an old trail after a busy frame. */
+        if (pending && event[0] == 0 && event[1] == 0x200 &&
+            events[4*(pending-1)] == 0 && events[4*(pending-1)+1] == 0x200) pending--;
+        memcpy(events + 4*pending++, event, 4*sizeof(int32_t));
     }
     atomic_store_explicit(&g_input.read, read, memory_order_release);
     int consumed = 0;
@@ -100,27 +110,44 @@ static void pump_input(void) {
 
 void hle_screen_pump(void) {
     pump_input();
+    static unsigned shown_seq;
+    static uint32_t last_present;
     uint32_t now = hle_ticks_ms();
-    if (g_headless || (int32_t)(now - g_next) < 0 ||
-        atomic_load_explicit(&g_presenting, memory_order_acquire)) return;
-    g_next = now + 33;
+    if (g_headless || atomic_load_explicit(&g_presenting, memory_order_acquire)) return;
     const uint8_t *px;
     const uint32_t *palette;
     int w, h, pitch, bpp;
-    if (!hle_dd_frame(&px, &w, &h, &pitch, &bpp, &palette, NULL)) return;
+    unsigned seq;
+    if (!hle_dd_frame(&px, &w, &h, &pitch, &bpp, &palette, &seq)) return;
+    if (seq == shown_seq && now-last_present < 250) return;
+    shown_seq = seq; last_present = now;
     if (hle_screen_frame_hook) hle_screen_frame_hook(px, w, h, pitch, bpp);
     int cursor = !hle_screen_cursor_hook || hle_screen_cursor_hook();
     /* The browser consumes a snapshot on its animation frame. Never wait
      * for painting with the guest machine locked, or keep servicing proxy
      * calls so continuously that the browser cannot run its event loop. */
-    size_t size = (size_t)pitch * h;
+    size_t size = (size_t)w * h * sizeof *g_pixels;
     if (size > g_pixels_size) {
-        uint8_t *pixels = realloc(g_pixels, size);
+        uint32_t *pixels = realloc(g_pixels, size);
         if (!pixels) return;
         g_pixels = pixels; g_pixels_size = size;
     }
-    memcpy(g_pixels, px, size);
-    if (palette) memcpy(g_palette, palette, sizeof g_palette);
+    /* Convert on the worker using a packed lookup instead of millions of
+     * JS channel writes on the browser thread. Keep the browser free for
+     * pointer events and audio, even at the display's full resolution. */
+    for (int y = 0; y < h; y++) {
+        const uint8_t *row = px + (size_t)y*pitch;
+        uint32_t *out = g_pixels + (size_t)y*w;
+        if (bpp == 16) {
+            const uint16_t *in = (const uint16_t *)row;
+            for (int x = 0; x < w; x++) out[x] = g_rgb565[in[x]];
+        } else for (int x = 0; x < w; x++) {
+            uint32_t p = bpp == 8 ? (palette ? palette[row[x]] : 0) :
+                row[x*(bpp/8)] | (uint32_t)row[x*(bpp/8)+1] << 8 |
+                (uint32_t)row[x*(bpp/8)+2] << 16;
+            out[x] = (p >> 16 & 255) | (p & 0xFF00) | (p & 255) << 16 | 0xFF000000u;
+        }
+    }
     atomic_store_explicit(&g_presenting, 1, memory_order_release);
     MAIN_THREAD_ASYNC_EM_ASM({
       requestAnimationFrame(() => {
@@ -130,30 +157,17 @@ void hle_screen_pump(void) {
             canvas.width = w; canvas.height = h;
             Module.ra2Resize();
         }
-        canvas.style.cursor = $6 ? 'default' : 'none';
-        Module.ra2SystemCursor = $6;
+        canvas.style.cursor = $3 ? 'default' : 'none';
+        Module.ra2SystemCursor = $3;
         Module.ra2DrawCursor();
         const ctx = Module.ra2Context || (Module.ra2Context = canvas.getContext('2d', {alpha:false}));
         let frame = Module.ra2Frame;
         if (!frame || frame.width !== w || frame.height !== h) frame = Module.ra2Frame = ctx.createImageData(w, h);
-        const out = frame.data; const source = $0; const pitch = $3; const bpp = $4;
-        for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) {
-            let r; let g; let b;
-            const offset = source + y*pitch + x*(bpp >> 3);
-            if (bpp === 16) {
-                const p = HEAPU16[offset >> 1];
-                r = (p >> 11) * 255/31; g = (p >> 5 & 63) * 255/63; b = (p & 31) * 255/31;
-            } else {
-                const p = bpp === 8 ? HEAPU32[($5 >> 2) + HEAPU8[offset]] : HEAPU32[offset >> 2];
-                r = p >> 16 & 255; g = p >> 8 & 255; b = p & 255;
-            }
-            const at = (y*w + x)*4;
-            out[at] = r; out[at+1] = g; out[at+2] = b; out[at+3] = 255;
-        }
+        frame.data.set(HEAPU8.subarray($0, $0+w*h*4));
         ctx.putImageData(frame, 0, 0);
         document.querySelector('#status').textContent = 'Game running';
         document.querySelector('#status').hidden = true;
-       } finally { Atomics.store(HEAP32, $7 >> 2, 0); }
+       } finally { Atomics.store(HEAP32, $4 >> 2, 0); }
       });
-    }, g_pixels, w, h, pitch, bpp, g_palette, cursor, &g_presenting);
+    }, g_pixels, w, h, cursor, &g_presenting);
 }

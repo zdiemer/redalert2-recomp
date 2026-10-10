@@ -37,6 +37,19 @@ async def test(args):
         browser = await p.chromium.launch(**options)
         page = await browser.new_page(viewport={"width":1360,"height":1100},
                                       screen={"width":1920,"height":1080})
+        if args.performance:
+            await page.add_init_script("""(() => {
+                const raf=window.requestAnimationFrame;
+                window.ra2PaintProbe={count:0,ms:0,maxMs:0};
+                window.requestAnimationFrame=callback=>raf.call(window,time=>{
+                    const start=performance.now();
+                    try { callback(time); }
+                    finally {
+                        const ms=performance.now()-start,p=window.ra2PaintProbe;
+                        p.count++; p.ms+=ms; p.maxMs=Math.max(p.maxMs,ms);
+                    }
+                });
+            })();""")
         if args.skip_intro:
             async def skip_intro(route):
                 response = await route.fetch()
@@ -96,6 +109,11 @@ async def test(args):
                 return null;
             }""")
         checks = {}
+        performance_samples = []
+        if args.performance:
+            gen = "gen_game" if args.target == "game" else "gen"
+            target_header = (ROOT / "src/recomp" / gen / "recomp_target.h").read_text()
+            frame_address = int(re.search(r'RA2_GAME_FRAME_VA (0x[0-9A-Fa-f]+)', target_header)[1], 16)
         try:
             await page.goto(url, timeout=120000)
             await page.wait_for_function("typeof ready !== 'undefined' && ready", timeout=120000)
@@ -107,6 +125,12 @@ async def test(args):
             movie_count, movie_seen, movie_at = 0, 0, 0
             for elapsed in range(args.seconds):
                 await asyncio.sleep(1)
+                if args.performance:
+                    sample=await page.evaluate("""address=>({time:performance.now(),
+                        gameFrame:HEAPU32[address>>>2],...window.ra2PaintProbe})""",frame_address)
+                    performance_samples.append(sample)
+                    if elapsed % 10 == 0:
+                        record("[performance] "+json.dumps(sample))
                 # Title animations and in-game radar messages also use Bink.
                 # Escape on those opens menus instead of skipping a cutscene.
                 movies = sum("with sound" in line and int(match[1]) >= 640
@@ -172,6 +196,18 @@ async def test(args):
             result = {"status":await page.locator("#status").inner_text(), "errors":errors,
                       "isolated":await page.evaluate("crossOriginIsolated"), "audio":audio, "movieTiming":timing,
                       "display":await page.evaluate("({requested:Module.ra2Resolution,width:Module.canvas.width,height:Module.canvas.height})"), "checks":checks}
+            if performance_samples:
+                (out / "performance.json").write_text(json.dumps(performance_samples,indent=2))
+                steady=[s for s in performance_samples if s["gameFrame"]>=300]
+                if len(steady)>=2:
+                    first,last=steady[0],steady[-1]
+                    seconds=(last["time"]-first["time"])/1000
+                    count=last["count"]-first["count"]
+                    result["performance"]={"seconds":seconds,
+                        "gameFps":(last["gameFrame"]-first["gameFrame"])/seconds,
+                        "paintFps":count/seconds,
+                        "paintMs":(last["ms"]-first["ms"])/max(1,count),
+                        "maxPaintMs":last["maxMs"]}
             (out / "result.json").write_text(json.dumps(result, indent=2))
             print(json.dumps(result), flush=True)
         except Exception as exc:
@@ -216,6 +252,7 @@ def main():
     parser.add_argument("--no-skip-movies",action="store_true",help="Leave movies playing to measure their real-time pace")
     parser.add_argument("--debug-stall",action="store_true",help="Capture debugger stacks if the browser stops responding")
     parser.add_argument("--native-logs",action="store_true",help="Retain Chromium's native crash log")
+    parser.add_argument("--performance",action="store_true",help="Measure steady gameplay and browser presentation rates")
     parser.add_argument("--arg", action="append", default=[])
     args = parser.parse_args()
     sys.exit(asyncio.run(test(args)))

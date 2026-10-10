@@ -122,16 +122,24 @@ static void close_bink(bink_t *b) {
             text = replace(text, '    RET(0, 7);\n}',
                            '    b->copy_ms += hle_ticks_ms()-before;\n    RET(0, 7);\n}')
         elif path.name == "host_lite.c":
-            # sched_yield is a no-op in Emscripten. Give the notified worker
-            # time to wake before the current worker takes the mutex again.
-            text = text.replace('#include <pthread.h>', '#include <pthread.h>\n#include <unistd.h>\n#include <emscripten.h>\n#include <stdatomic.h>')
+            text = text.replace('#include <pthread.h>', '#include <pthread.h>\n#include <unistd.h>\n#include <emscripten.h>\n#include <emscripten/threading.h>\n#include <stdatomic.h>')
             # These counters are read outside the machine mutex. Volatile
             # does not provide cross-thread synchronization in WebAssembly.
             text = replace(text, 'static volatile int      g_waiters;', 'static _Atomic int      g_waiters;')
             text = replace(text, 'static volatile unsigned g_owner_gen;', 'static _Atomic unsigned g_owner_gen;')
             text = replace(text, '__sync_fetch_and_add(&g_waiters, 1);', 'atomic_fetch_add(&g_waiters, 1);')
             text = replace(text, '__sync_fetch_and_sub(&g_waiters, 1);', 'atomic_fetch_sub(&g_waiters, 1);')
-            text = text.replace('sched_yield();', 'usleep(1000);')
+            # Wait for an actual machine handoff, waking as soon as the next
+            # owner takes it. Fixed 1 ms sleeps at every contended import
+            # unnecessarily throttle the simulation and mouse worker.
+            text = replace(text, 'g_owner_gen++;', '''g_owner_gen++;
+    emscripten_futex_wake(&g_owner_gen, 0x7FFFFFFF);''')
+            text = replace(text,
+                           'for (int spins = 0; g_waiters && g_owner_gen == g_block_gen && spins < 1000; spins++) sched_yield();',
+                           'for (int spins = 0; g_waiters && g_owner_gen == g_block_gen && spins < 1000; spins++) emscripten_futex_wait(&g_owner_gen, g_block_gen, 1.0);')
+            text = replace(text,
+                           'for (int spins = 0; g_waiters && g_owner_gen == gen && spins < 1000; spins++) sched_yield();',
+                           'for (int spins = 0; g_waiters && g_owner_gen == gen && spins < 1000; spins++) emscripten_futex_wait(&g_owner_gen, gen, 1.0);')
             text = replace(text, 'static __thread mstate g_ms;', '''static __thread mstate g_ms;
 static mstate *web_states[64];
 static volatile unsigned web_states_count;''')

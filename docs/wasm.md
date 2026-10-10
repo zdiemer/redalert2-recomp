@@ -14,6 +14,10 @@ the original movies' 15 fps; the audio queue remained about 74 ms ahead.
 The Allied campaign check played its cutscenes, reached simulation frame 2,450,
 and verified Tanya's selection and movement by tracking her health bar through
 69 pixels of movement after a browser click (160 seconds, zero JavaScript errors).
+A subsequent 1080p comparison measured 13.4 displayed fps and 57.9 ms per
+browser paint before the presenter optimization, versus 61.7 displayed fps
+and 0.93 ms afterward. Simulation speed increased from 57.4 to 62.4 fps in
+the same skirmish at the same speed setting (Chrome 154, 90-second runs).
 Yuri's Revenge has also lifted successfully (24,944 functions,
 zero errors and zero stubs); its WASM build has not yet been tested.
 
@@ -53,8 +57,15 @@ The installation's INI is not modified. The menus keep their original size;
 missions render at the chosen widescreen resolution, as described in
 [hires.md](hires.md). For a fixed test size, add `?resolution=1920x1080`.
 
-For Yuri's Revenge, pass `--target gamemd` to all three commands and
-`--build build-wasm` to the server. Each game has its own generated sources
+For Yuri's Revenge, use a separate port to keep both games available:
+
+```powershell
+py -3 tools/wasm/bootstrap.py --target gamemd --game-dir "C:\Program Files\EA Games\Command and Conquer Red Alert II"
+py -3 tools/wasm/build.py --target gamemd
+py -3 tools/wasm/serve.py --target gamemd --build build-wasm --port 8081 --game-dir "C:\Program Files\EA Games\Command and Conquer Red Alert II"
+```
+
+Open <http://127.0.0.1:8081/ra2.html>. Each game has its own generated sources
 and output directory. No retail files, lifted sources or WASM output are
 committed or uploaded; every player builds from their own installation.
 
@@ -69,9 +80,12 @@ committed or uploaded; every player builds from their own installation.
   feeds Web Audio on its own worker. Fonts use SDL2_ttf. SDL's stock browser
   renderer and audio path failed when called from the game worker.
 - DOM input uses a shared atomic ring, so polling `PeekMessage` does not make
-  synchronous calls to the browser. A bounded pixel snapshot is painted on
-  `requestAnimationFrame`. Mouse release waits for the mouse worker to observe
-  the press and the final drag position.
+  synchronous calls to the browser. Consecutive motion events collapse to the
+  latest position, preserving button/key transitions. A bounded RGBA snapshot
+  is converted on the worker, with a packed RGB565 lookup, and painted on
+  `requestAnimationFrame` without a 30 fps cap or per-pixel browser loop.
+  Unchanged DirectDraw frames are skipped. Mouse release waits for the mouse
+  worker to observe the press and the final drag position.
 - Browser adaptations are generated into the build directory by
   `tools/wasm/prepare_runtime.py`. The dependency checkout is left untouched.
 - Bink movies use FFmpeg's video and audio decoders in WASM through the HLE.
@@ -89,9 +103,10 @@ committed or uploaded; every player builds from their own installation.
 To pass scripted host arguments, repeat `arg` in the page URL, for example
 `?arg=--debuglog&arg=--watchdog&arg=60`. Runtime output appears in the log.
 `--filetrace` logs file opens; the watchdog also reports each thread's saved
-guest function and stack address. Browser scheduling adapts HLE's fairness
-loop to sleep briefly because Emscripten's `sched_yield` does not yield a CPU
-time slice.
+guest function and stack address. HLE's fairness loop uses an atomic wait
+that wakes when the next thread takes the machine, avoiding a fixed 1 ms
+sleep at every contended handoff. Emscripten's `sched_yield` does not yield
+a CPU time slice.
 
 ## Browser validation
 
@@ -102,6 +117,7 @@ With the server running:
 ```powershell
 py -3 tools/wasm/playtest.py --case video --seconds 35
 py -3 tools/wasm/playtest.py --case skirmish --skip-intro --resolution auto --seconds 90
+py -3 tools/wasm/playtest.py --case skirmish --skip-intro --resolution auto --seconds 90 --performance
 py -3 tools/wasm/playtest.py --case campaign --skip-intro --seconds 200
 ```
 
@@ -120,6 +136,8 @@ the installation's intro setting. The video case leaves movies uninterrupted
 and checks their pace. `--resolution auto` uses an emulated 1920x1080 display
 inside a differently sized browser window, checking the game's INI resolution
 rather than CSS scaling. Use `--chromium` to select an installed browser.
+`--performance` also writes `performance.json` and reports simulation fps,
+browser presentation fps and paint time after simulation frame 300.
 
 FFmpeg sources are pinned to `f893221c8d89cb798b829bebe71d55e1a3f242fd`
 (7.1.2), using its LGPL 2.1-or-later configuration; source and license are
